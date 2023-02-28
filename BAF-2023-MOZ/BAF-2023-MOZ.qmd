@@ -2,10 +2,200 @@
 title: "BAF 2023 Mozambique analysis"
 ---
 
-## Quarto
+```{r}
+#| echo: false
+#| output: false
 
-Quarto enables you to weave together content and executable code into a finished document. To learn more about Quarto see <https://quarto.org>.
+library(data.world)
+library(dplyr)
+library(quantmod)
+```
+
+## 1 Ecological metrics
+
+### a) Coral cover
 
 ```{r}
-1 + 1
+benthic <- data.world::query(
+  data.world::qry_sql(
+    "SELECT * FROM benthicmaster
+    WHERE country='Mozambique' AND level2_name='Memba'"
+  ),
+  "https://data.world/rare/benthic-surveys"
+)
+
+benthic %>% 
+  dplyr::group_by(ma_name, location_status, location_name, transect_no, category) %>% 
+  dplyr::summarize(percentage=sum(percentage)) %>% 
+  # Percentages don't add to 100%; normalize them
+  dplyr::mutate(
+    total_percentage = sum(percentage),
+    percentage = percentage / total_percentage * 100
+  ) %>%
+  dplyr::group_by(ma_name, location_status, location_name, category) %>% 
+  dplyr::summarize(percentage=mean(percentage)) %>% 
+  # Normalize percentages again
+  dplyr::mutate(
+    total_percentage = sum(percentage),
+    percentage = percentage / total_percentage * 100
+  ) %>% 
+  dplyr::group_by(ma_name, location_status, category) %>% 
+  dplyr::summarize(percentage=mean(percentage)) %>% 
+  dplyr::ungroup() %>% 
+  tidyr::pivot_wider(names_from=category, values_from=percentage) %>% 
+  dplyr::mutate(coral_cover = `Hard coral` + `Soft coral`) %>% 
+  dplyr::select(ma_name, location_status, coral_cover) %>% 
+  as.data.frame()
 ```
+
+### b) Seagrass cover
+
+```{r}
+# TODO data.world::query-ify this
+# Seagrass_Memba_Ihla_de_Mozambique_Dec2020_clean.csv
+# https://data.world/raremozambique/seagrass-surveys/
+load("seagrass.surveys.rda")
+seagrass.surveys %>% 
+  dplyr::filter(level2_name=="Memba") %>% 
+  dplyr::group_by(ma_name, location_status, location_name, transect_no, quadrat_no) %>% 
+  dplyr::summarize(cover = mean(cover, na.rm=TRUE)) %>% 
+  dplyr::group_by(ma_name, location_status, location_name, transect_no) %>% 
+  dplyr::summarize(cover = mean(cover)) %>% 
+  dplyr::group_by(ma_name, location_status, location_name) %>% 
+  dplyr::summarize(cover = mean(cover)) %>% 
+  dplyr::group_by(ma_name, location_status) %>% 
+  dplyr::summarize(cover = mean(cover))
+```
+
+### c) Mangroves
+
+#### i) Tree diameter
+
+```{r}
+load("mangrove.surveys.rda")
+
+mangrove.surveys %>%
+  # Six rows with missing transect_no -- take them out
+  dplyr::filter(level2_name=="Memba", age == "adult", !is.na(transect_no)) %>% 
+  dplyr::group_by(ma_name, location_status, location_name, transect_no, plot_no) %>% 
+  dplyr::summarize(dbh_cm=mean(dbh_cm,na.rm=TRUE)) %>% 
+  dplyr::group_by(ma_name, location_status, location_name, transect_no) %>% 
+  dplyr::summarize(dbh_cm=mean(dbh_cm)) %>% 
+  dplyr::group_by(ma_name, location_status, location_name) %>% 
+  dplyr::summarize(dbh_cm=mean(dbh_cm)) %>% 
+  dplyr::group_by(ma_name, location_status) %>% 
+  dplyr::summarize(mean_tree_diameter_cm=mean(dbh_cm))
+```
+
+#### ii) Tree density
+
+```{r}
+mangrove.surveys %>% 
+  dplyr::filter(level2_name=="Memba", age=="sapling", !is.na(transect_no)) %>% 
+  dplyr::group_by(ma_name, location_status, location_name, transect_no, plot_no, quadrat_no) %>% 
+  dplyr::summarize(pop_density=sum(count, na.rm=TRUE)) %>% 
+  dplyr::group_by(ma_name, location_status, location_name, transect_no, plot_no) %>% 
+  dplyr::summarize(pop_density=mean(pop_density)) %>% 
+  dplyr::group_by(ma_name, location_status, location_name, transect_no) %>% 
+  dplyr::summarize(pop_density=mean(pop_density)) %>% 
+  dplyr::group_by(ma_name, location_status, location_name) %>% 
+  dplyr::summarize(pop_density=mean(pop_density)) %>% 
+  dplyr::group_by(ma_name, location_status) %>% 
+  dplyr::summarize(pop_density=mean(pop_density)) %>% 
+  dplyr::mutate(sapling_tree_density_ind_ha = pop_density*1e4) %>% 
+  dplyr::select(-pop_density)
+```
+
+## HHS data
+
+```{r}
+hhs <- raretech::getData("hhs")
+hhs$data <- hhs$data %>% 
+  dplyr::filter(
+    country=="Mozambique",
+    local=="Memba",
+    !(maa %in% c("Serissa", "Simuco")),
+    year==2021
+  )
+
+mzn2usd <- quantmod::getQuote("MZNUSD=X")$Last
+
+hhs$data <- hhs$data %>% 
+  dplyr::mutate(
+    `84_post_income_man` = as.double(`84_post_income_man`),
+    `84_post_income_woman` = as.double(`84_post_income_woman`)
+  )
+```
+
+### a) Q84
+
+```{r}
+q84_cols <- stringr::str_subset(names(hhs$data), "^84_post_income")
+
+zeros <- as.list(rep(0, 3))
+names(zeros) <- q84_cols
+
+hhs$data %>% 
+  dplyr::select(local, maa, q84_cols) %>% 
+  dplyr::filter(!(is.na(`84_post_income_man`) & is.na(`84_post_income_woman`) & is.na(`84_post_income_nonbinary`))) %>% 
+  tidyr::replace_na(zeros) %>%
+  dplyr::mutate(monthly_income = `84_post_income_man` + `84_post_income_woman` + `84_post_income_nonbinary`) %>% 
+  dplyr::group_by(local, maa) %>% 
+  dplyr::summarize(monthly_income=mean(monthly_income, na.rm=TRUE)) %>% 
+  dplyr::group_by(local) %>% 
+  dplyr::summarize(monthly_income=mean(monthly_income)) %>% 
+  dplyr::mutate(monthly_fish_processing_income_usd=monthly_income*mzn2usd) %>% 
+  dplyr::select(local, monthly_fish_processing_income_usd)
+```
+
+### b) Q83 - Q84
+
+```{r}
+zeros <- as.list(rep(0,4))
+names(zeros) <- c("83_hh_average_income", q84_cols)
+
+hhs$data %>% 
+  dplyr::select(local, maa, `83_hh_average_income`, q84_cols) %>%
+  dplyr::filter(
+    !(is.na(`83_hh_average_income`) & is.na(`84_post_income_man`) & 
+      is.na(`84_post_income_woman`) & is.na(`84_post_income_nonbinary`))
+  ) %>% 
+  tidyr::replace_na(zeros) %>% 
+  dplyr::mutate(
+    monthly_fish_processing_income = `84_post_income_man` + `84_post_income_woman` + `84_post_income_nonbinary`,
+    income_diff = `83_hh_average_income` - monthly_fish_processing_income
+  ) %>% 
+  # Some negative values -- essentially respondents saying that their monthly income is less than
+  # just their fish processing income which doesn't make sense. Throw these out
+  dplyr::filter(income_diff > 0) %>% 
+  dplyr::group_by(local, maa) %>% 
+  dplyr::summarize(income_diff = mean(income_diff)) %>% 
+  dplyr::group_by(local) %>% 
+  dplyr::summarize(income_diff = mean(income_diff)) %>% 
+  dplyr::mutate(monthly_non_fish_processing_income_usd = income_diff*mzn2usd) %>% 
+  dplyr::select(local, monthly_non_fish_processing_income_usd)
+```
+
+### c) Q90
+
+```{r}
+count_maa <- hhs$data %>% 
+      dplyr::filter(`90_hh_ends_meet` != "Not Answered") %>% 
+      dplyr::count(local, maa)
+
+hhs$data %>% 
+  dplyr::filter(`90_hh_ends_meet` != "Not Answered") %>% 
+  dplyr::count(local, maa, `90_hh_ends_meet`) %>% 
+  dplyr::left_join(
+    count_maa,
+    by=c("local", "maa"),
+    suffix=c("_response", "_maa")
+  ) %>% 
+  dplyr::mutate(prop=n_response/n_maa*100) %>% 
+  dplyr::select(local, maa, `90_hh_ends_meet`, prop) %>% 
+  tidyr::pivot_wider(names_from=`90_hh_ends_meet`, values_from=prop, values_fill=0) %>% 
+  dplyr::mutate(sufficient_income=`Easy` + `Fairly easy` + `Very easy`) %>% 
+  dplyr::group_by(local) %>% 
+  dplyr::summarize(sufficient_income=mean(sufficient_income))
+```
+
