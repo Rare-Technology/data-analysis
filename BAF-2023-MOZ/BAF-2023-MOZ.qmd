@@ -56,7 +56,7 @@ benthic %>%
 # https://data.world/raremozambique/seagrass-surveys/
 load("seagrass.surveys.rda")
 seagrass.surveys %>% 
-  dplyr::filter(level2_name=="Memba") %>% 
+  dplyr::filter(level2_name=="Ilha de Mocambique") %>% 
   dplyr::group_by(ma_name, location_status, location_name, transect_no, quadrat_no) %>% 
   dplyr::summarize(cover = mean(cover, na.rm=TRUE)) %>% 
   dplyr::group_by(ma_name, location_status, location_name, transect_no) %>% 
